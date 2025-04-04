@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use mcp_core::tool::{Tool, ToolAnnotations};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
@@ -424,7 +424,7 @@ impl Agent for TruncateAgent {
                         // First handle any frontend tool requests
                         let mut remaining_requests = Vec::new();
                         for request in &tool_requests {
-                            if let Ok(tool_call) = (*request).tool_call.clone() {
+                            if let Ok(tool_call) = request.tool_call.clone() {
                                 if capabilities.is_frontend_tool(&tool_call.name) {
                                     // Send frontend tool request and wait for response
                                     yield Message::assistant().with_frontend_tool_request(
@@ -444,11 +444,19 @@ impl Agent for TruncateAgent {
                         }
 
                         // Split tool requests into enable_extension and others
-                        let (install_requests, non_install_requests): (Vec<&ToolRequest>, Vec<&ToolRequest>) = remaining_requests.clone()
+                        let (enable_extension_requests, non_enable_extension_requests): (Vec<&ToolRequest>, Vec<&ToolRequest>) = remaining_requests.clone()
                             .into_iter()
                             .partition(|req| {
                                 req.tool_call.as_ref()
                                     .map(|call| call.name == "platform__enable_extension")
+                                    .unwrap_or(false)
+                            });
+
+                        let (search_extension_requests, _non_search_extension_requests): (Vec<&ToolRequest>, Vec<&ToolRequest>) = remaining_requests.clone()
+                            .into_iter()
+                            .partition(|req| {
+                                req.tool_call.as_ref()
+                                    .map(|call| call.name == "platform__search_available_extensions")
                                     .unwrap_or(false)
                             });
 
@@ -457,7 +465,7 @@ impl Agent for TruncateAgent {
 
                         // If there are install extension requests, always require confirmation
                         // or if goose_mode is approve or smart_approve, check permissions for all tools
-                        if !install_requests.is_empty() || mode.as_str() == "approve" || mode.as_str() == "smart_approve" {
+                        if !enable_extension_requests.is_empty() || mode.as_str() == "approve" || mode.as_str() == "smart_approve" {
                             let mut needs_confirmation = Vec::<&ToolRequest>::new();
                             let mut approved_tools = Vec::new();
                             let mut llm_detect_candidates = Vec::<&ToolRequest>::new();
@@ -466,8 +474,8 @@ impl Agent for TruncateAgent {
                             // If approve mode or smart approve mode, check permissions for all tools
                             if mode.as_str() == "approve" || mode.as_str() == "smart_approve" {
                                 let store = ToolPermissionStore::load()?;
-                                for request in &non_install_requests {
-                                    if let Ok(tool_call) = (*request).tool_call.clone() {
+                                for request in &non_enable_extension_requests {
+                                    if let Ok(tool_call) = request.tool_call.clone() {
                                         // Regular permission checking for other tools
                                         if tools_with_readonly_annotation.contains(&tool_call.name) {
                                             approved_tools.push((request.id.clone(), tool_call));
@@ -495,9 +503,9 @@ impl Agent for TruncateAgent {
                             if !llm_detect_candidates.is_empty() && mode == "smart_approve" {
                                 detected_read_only_tools = detect_read_only_tools(&capabilities, llm_detect_candidates.clone()).await;
                                 // Remove install extensions from read-only tools
-                                if !install_requests.is_empty() {
+                                if !enable_extension_requests.is_empty() {
                                     detected_read_only_tools.retain(|tool_name| {
-                                        !install_requests.iter().any(|req| {
+                                        !enable_extension_requests.iter().any(|req| {
                                             req.tool_call.as_ref()
                                                 .map(|call| call.name == *tool_name)
                                                 .unwrap_or(false)
@@ -511,8 +519,8 @@ impl Agent for TruncateAgent {
                             let mut install_results = Vec::new();
 
                             // Handle install extension requests
-                            for request in &install_requests {
-                                if let Ok(tool_call) = (*request).tool_call.clone() {
+                            for request in &enable_extension_requests {
+                                if let Ok(tool_call) = request.tool_call.clone() {
                                     let confirmation = Message::user().with_enable_extension_request(
                                         request.id.clone(),
                                         tool_call.arguments.get("extension_name")
@@ -541,7 +549,7 @@ impl Agent for TruncateAgent {
 
                             // Process read-only tools
                             for request in &needs_confirmation {
-                                if let Ok(tool_call) = (*request).tool_call.clone() {
+                                if let Ok(tool_call) = request.tool_call.clone() {
                                     // Skip confirmation if the tool_call.name is in the read_only_tools list
                                     if detected_read_only_tools.contains(&tool_call.name) {
                                         let tool_future = Self::create_tool_future(&capabilities, tool_call, request.id.clone());
@@ -600,9 +608,42 @@ impl Agent for TruncateAgent {
                             }
                         }
 
+                        if mode.as_str() == "auto" || !search_extension_requests.is_empty() {
+                            let mut tool_futures = Vec::new();
+                            // Process non_enable_extension_requests and search_extension_requests without duplicates
+                            let mut processed_ids = HashSet::new();
+                            
+                            for request in non_enable_extension_requests.iter().chain(search_extension_requests.iter()) {
+                                if processed_ids.insert(request.id.clone()) {
+                                    if let Ok(tool_call) = request.tool_call.clone() {
+                                        let tool_future = Self::create_tool_future(&capabilities, tool_call, request.id.clone());
+                                        tool_futures.push(tool_future);
+                                    }
+                                }
+                            }
+                            
+                            // Wait for all tool calls to complete
+                            let results = futures::future::join_all(tool_futures).await;
+                            for (request_id, output) in results {
+                                message_tool_response = message_tool_response.with_tool_response(
+                                    request_id,
+                                    output,
+                                );
+                            }
+                        }
+
                         if mode.as_str() == "chat" {
                             // Skip all tool calls in chat mode
-                            for request in &non_install_requests {
+                            // Skip search extension requests since they were already processed
+                            let non_search_non_enable_extension_requests = non_enable_extension_requests.iter()
+                                .filter(|req| {
+                                    if let Ok(tool_call) = &req.tool_call {
+                                        tool_call.name != "platform__search_available_extensions"
+                                    } else {
+                                        true
+                                    }
+                                });
+                            for request in non_search_non_enable_extension_requests {
                                 message_tool_response = message_tool_response.with_tool_response(
                                     request.id.clone(),
                                     Ok(vec![Content::text(
@@ -619,23 +660,6 @@ impl Agent for TruncateAgent {
                             }
                         }
 
-                        if mode.as_str() == "auto" {
-                            let mut tool_futures = Vec::new();
-                            for request in &non_install_requests {
-                                if let Ok(tool_call) = (*request).tool_call.clone() {
-                                    let tool_future = Self::create_tool_future(&capabilities, tool_call, request.id.clone());
-                                    tool_futures.push(tool_future);
-                                }
-                            }
-                            // Wait for all tool calls to complete
-                            let results = futures::future::join_all(tool_futures).await;
-                            for (request_id, output) in results {
-                                message_tool_response = message_tool_response.with_tool_response(
-                                    request_id,
-                                    output,
-                                );
-                            }
-                        }
                         yield message_tool_response.clone();
 
                         messages.push(response);
