@@ -612,7 +612,7 @@ impl Agent for TruncateAgent {
                             let mut tool_futures = Vec::new();
                             // Process non_enable_extension_requests and search_extension_requests without duplicates
                             let mut processed_ids = HashSet::new();
-                            
+
                             for request in non_enable_extension_requests.iter().chain(search_extension_requests.iter()) {
                                 if processed_ids.insert(request.id.clone()) {
                                     if let Ok(tool_call) = request.tool_call.clone() {
@@ -621,7 +621,7 @@ impl Agent for TruncateAgent {
                                     }
                                 }
                             }
-                            
+
                             // Wait for all tool calls to complete
                             let results = futures::future::join_all(tool_futures).await;
                             for (request_id, output) in results {
