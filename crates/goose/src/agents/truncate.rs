@@ -30,9 +30,7 @@ use crate::token_counter::TokenCounter;
 use crate::truncate::{truncate_messages, OldestFirstTruncation};
 use anyhow::{anyhow, Result};
 use indoc::indoc;
-use mcp_core::{
-    prompt::Prompt, protocol::GetPromptResult, tool::Tool, Content, ToolError, ToolResult,
-};
+use mcp_core::{prompt::Prompt, protocol::GetPromptResult, Content, ToolError, ToolResult};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -426,7 +424,7 @@ impl Agent for TruncateAgent {
                         // First handle any frontend tool requests
                         let mut remaining_requests = Vec::new();
                         for request in &tool_requests {
-                            if let Ok(tool_call) = request.tool_call.clone() {
+                            if let Ok(tool_call) = (*request).tool_call.clone() {
                                 if capabilities.is_frontend_tool(&tool_call.name) {
                                     // Send frontend tool request and wait for response
                                     yield Message::assistant().with_frontend_tool_request(
@@ -446,7 +444,7 @@ impl Agent for TruncateAgent {
                         }
 
                         // Split tool requests into enable_extension and others
-                        let (install_requests, non_install_requests): (Vec<_>, Vec<_>) = remaining_requests.clone()
+                        let (install_requests, non_install_requests): (Vec<&ToolRequest>, Vec<&ToolRequest>) = remaining_requests.clone()
                             .into_iter()
                             .partition(|req| {
                                 req.tool_call.as_ref()
@@ -460,7 +458,6 @@ impl Agent for TruncateAgent {
                         // If there are install extension requests, always require confirmation
                         // or if goose_mode is approve or smart_approve, check permissions for all tools
                         if !install_requests.is_empty() || mode.as_str() == "approve" || mode.as_str() == "smart_approve" {
-                            let mut read_only_tools = Vec::new();
                             let mut needs_confirmation = Vec::<&ToolRequest>::new();
                             let mut approved_tools = Vec::new();
                             let mut llm_detect_candidates = Vec::<&ToolRequest>::new();
@@ -470,7 +467,7 @@ impl Agent for TruncateAgent {
                             if mode.as_str() == "approve" || mode.as_str() == "smart_approve" {
                                 let store = ToolPermissionStore::load()?;
                                 for request in &non_install_requests {
-                                    if let Ok(tool_call) = request.tool_call.clone() {
+                                    if let Ok(tool_call) = (*request).tool_call.clone() {
                                         // Regular permission checking for other tools
                                         if tools_with_readonly_annotation.contains(&tool_call.name) {
                                             approved_tools.push((request.id.clone(), tool_call));
@@ -506,6 +503,7 @@ impl Agent for TruncateAgent {
                                                 .unwrap_or(false)
                                         })
                                     });
+                                }
                             }
 
                             // Handle pre-approved and read-only tools in parallel
@@ -514,7 +512,7 @@ impl Agent for TruncateAgent {
 
                             // Handle install extension requests
                             for request in &install_requests {
-                                if let Ok(tool_call) = request.tool_call.clone() {
+                                if let Ok(tool_call) = (*request).tool_call.clone() {
                                     let message = "Goose would like to install the following extension. Allow? (y/n):".to_string();
                                     let confirmation = Message::user().with_tool_confirmation_request(
                                         request.id.clone(),
@@ -532,7 +530,7 @@ impl Agent for TruncateAgent {
                                                     .and_then(|v| v.as_str())
                                                     .unwrap_or("")
                                                     .to_string();
-                                                let install_result = Self::install_extension(&mut capabilities, extension_name, request.id.clone()).await;
+                                                let install_result = Self::enable_extension(&mut capabilities, extension_name, request.id.clone()).await;
                                                 install_results.push(install_result);
                                             }
                                             break;
@@ -543,7 +541,7 @@ impl Agent for TruncateAgent {
 
                             // Process read-only tools
                             for request in &needs_confirmation {
-                                if let Ok(tool_call) = request.tool_call.clone() {
+                                if let Ok(tool_call) = (*request).tool_call.clone() {
                                     // Skip confirmation if the tool_call.name is in the read_only_tools list
                                     if detected_read_only_tools.contains(&tool_call.name) {
                                         let tool_future = Self::create_tool_future(&capabilities, tool_call, request.id.clone());
@@ -594,7 +592,13 @@ impl Agent for TruncateAgent {
                                     output,
                                 );
                             }
-                        };
+                            for (request_id, output) in install_results {
+                                message_tool_response = message_tool_response.with_tool_response(
+                                    request_id,
+                                    output
+                                );
+                            }
+                        }
 
                         if mode.as_str() == "chat" {
                             // Skip all tool calls in chat mode
@@ -613,12 +617,12 @@ impl Agent for TruncateAgent {
                                     )]),
                                 );
                             }
-                        };
+                        }
 
                         if mode.as_str() == "auto" {
                             let mut tool_futures = Vec::new();
                             for request in &non_install_requests {
-                                if let Ok(tool_call) = request.tool_call.clone() {
+                                if let Ok(tool_call) = (*request).tool_call.clone() {
                                     let tool_future = Self::create_tool_future(&capabilities, tool_call, request.id.clone());
                                     tool_futures.push(tool_future);
                                 }

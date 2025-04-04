@@ -59,7 +59,6 @@ pub struct ToolConfirmationRequest {
     pub prompt: Option<String>,
 }
 
-
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallExtensionRequest {

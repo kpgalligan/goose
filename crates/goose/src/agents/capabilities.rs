@@ -750,6 +750,9 @@ impl Capabilities {
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| format!("Extension '{}'", name))
                     }
+                    ExtensionConfig::Frontend { name, .. } => {
+                        format!("Frontend extension '{}'", name)
+                    }
                 };
                 disabled_extensions.push(format!("- {} - {}", config.name(), description));
             }
