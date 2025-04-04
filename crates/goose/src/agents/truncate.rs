@@ -513,12 +513,12 @@ impl Agent for TruncateAgent {
                             // Handle install extension requests
                             for request in &install_requests {
                                 if let Ok(tool_call) = (*request).tool_call.clone() {
-                                    let message = "Goose would like to install the following extension. Allow? (y/n):".to_string();
-                                    let confirmation = Message::user().with_tool_confirmation_request(
+                                    let confirmation = Message::user().with_enable_extension_request(
                                         request.id.clone(),
-                                        tool_call.name.clone(),
-                                        tool_call.arguments.clone(),
-                                        Some(message),
+                                        tool_call.arguments.get("extension_name")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string()
                                     );
                                     yield confirmation;
 
