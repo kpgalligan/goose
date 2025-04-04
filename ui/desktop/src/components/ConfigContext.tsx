@@ -160,12 +160,19 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
   };
 
   const getExtensions = async (forceRefresh = false): Promise<FixedExtensionEntry[]> => {
+    // If a refresh is forced, or we don't have providers yet
     if (forceRefresh || extensionsList.length === 0) {
-      // If a refresh is forced, or we don't have providers yet
-      const response = await apiGetExtensions();
-      const extensionResponse: ExtensionResponse = response.data;
-      setExtensionsList(extensionResponse.extensions);
-      return extensionResponse.extensions;
+      try {
+        const response = await apiGetExtensions();
+        const extensionResponse: ExtensionResponse = response.data;
+        setExtensionsList(extensionResponse.extensions);
+        return extensionResponse.extensions;
+      } catch (error: any) {
+        if (error.status === 422) {
+          throw new Error('Check contents of ~/.config/goose/config.yaml');
+        }
+        throw error;
+      }
     }
     // Otherwise return the cached providers
     return extensionsList;

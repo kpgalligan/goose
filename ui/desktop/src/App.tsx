@@ -7,7 +7,7 @@ import { useModel } from './components/settings/models/ModelContext';
 import { useRecentModels } from './components/settings/models/RecentModels';
 import { createSelectedModel } from './components/settings/models/utils';
 import { getDefaultModel } from './components/settings/models/hardcoded_stuff';
-import ErrorScreen from './components/ErrorScreen';
+import { ErrorUI } from './components/ErrorBoundary';
 import { ConfirmationModal } from './components/ui/ConfirmationModal';
 import { ToastContainer } from 'react-toastify';
 import { toastService } from './toasts';
@@ -64,7 +64,7 @@ export default function App() {
     view: 'welcome',
     viewOptions: {},
   });
-  const { getExtensions, addExtension, read, upsert } = useConfig();
+  const { getExtensions, addExtension, read } = useConfig();
   const initAttemptedRef = useRef(false);
 
   // Utility function to extract the command from the link
@@ -97,26 +97,18 @@ export default function App() {
         const model = config.GOOSE_MODEL ?? (await read('GOOSE_MODEL', false));
 
         if (provider && model) {
-          console.log(`Using provider: ${provider}, model: ${model}`);
           setView('chat');
 
-          try {
-            await initializeSystem(provider, model, {
-              getExtensions,
-              addExtension,
-            });
-          } catch (error) {
-            console.error('Error in alpha initialization:', error);
-            setFatalError(`System initialization error: ${error.message || 'Unknown error'}`);
-            setView('welcome');
-          }
+          await initializeSystem(provider, model, {
+            getExtensions,
+            addExtension,
+          });
         } else {
           console.log('Missing required configuration, showing onboarding');
           setView('welcome');
         }
       } catch (error) {
-        console.error('Error in alpha config check:', error);
-        setFatalError(`Configuration error: ${error.message || 'Unknown error'}`);
+        setFatalError(`${error.message || 'Unknown error'}`);
         setView('welcome');
       }
 
@@ -126,7 +118,7 @@ export default function App() {
 
     initializeApp().catch((error) => {
       console.error('Unhandled error in initialization:', error);
-      setFatalError(`Initialization error: ${error.message || 'Unknown error'}`);
+      setFatalError(`${error.message || 'Unknown error'}`);
     });
   }, []);
 
@@ -364,9 +356,8 @@ export default function App() {
     });
   }, []);
 
-  // keep
   if (fatalError) {
-    return <ErrorScreen error={fatalError} onReload={() => window.electron.reloadApp()} />;
+    return <ErrorUI error={new Error(fatalError)} />;
   }
 
   if (isLoadingSession)
